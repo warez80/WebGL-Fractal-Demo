@@ -1,0 +1,658 @@
+<!doctype html>
+<html>
+<head>
+	<meta charset="utf-8" />
+	<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+	<title>CAP 4720 Final Project, By William Brigham</title>
+	
+	<!-- Notes --
+	
+	Burning Ship: Things get pixelated when very zoomed due to floating point precision issues.
+	
+	Henon Map: 
+	Alpha 1.4 Beta .3 = Classical Henon Map
+	Alpha .2 Beta .7 = Horn-like pattern from two spirals.
+	Alpha .2 Beta -1 = Single orbital with possibility of escape.
+	Alpha .9 Beta .4 = Four convergence points that seem to lie on the classical Henon map.
+	Alpha .6 Beta .9 = Two convergence points with a lot of divergence possibilities.
+	Alpha .1 Beta .9 = Two spirally convergence points with occasional T shapes in the middle.
+	Alpha .1 Beta 1.1 = Two orbitals in the corners.
+	
+	-->
+	
+	
+	<!-- Fractal Shaders -->
+	
+	<script type="x-shader/x-fragment" id="raymarched">
+		uniform float i3DIterations;
+		const float MAX_ITER = 100.;
+		
+		float sdf(vec3 p) {
+			mat2 camRotator = rotate2D(iTime * .2);
+			p.xz = camRotator * p.xz;
+			p.yz = camRotator * p.yz;
+			p.xy = camRotator * p.xy;
+			float bound = fBox(p, vec3(.1));
+			
+			float cut = 5.;
+			
+			
+			
+			vec2 reshape = vec2(1. / cut, cut);
+			vec3 curBox = vec3(.1);
+			float sd = 0.;
+			for (float i = 0.; i < MAX_ITER; i += 1.) {
+				if (i >= i3DIterations) break;
+				curBox *= reshape.x;
+				p += curBox * .5;
+				p = mod(p, curBox);
+				p -= curBox * .5;
+				float crossSD = min(
+					fBox(p, curBox * reshape.xyx), min(
+						fBox(p, curBox * reshape.yxx), 
+						fBox(p, curBox * reshape.xxy)));
+				sd = min(sd, crossSD);
+			}
+			
+			return max(-sd, bound);
+		}
+
+		float rayMarching(vec3 ro, vec3 rd, float clipNear, float clipFar) {
+			float cd = 0.;
+			for (int i = 0; i < 25; ++i) {
+				vec3 p = ro + cd * rd;
+				float d = sdf(p);
+				cd += d;
+			}
+			return cd;
+		}
+		
+		void main() {
+			Setup3D info = init3D(vec3(0.,0.,0.), vec3(0.,0.,.3), .5);
+			
+			vec3 ro = info.origin;
+			vec3 rd = info.viewDir;
+			vec3 bgcolor = vec3(1.,0.97,0.92)*0.15;
+			const float clipNear = 0.0;
+			const float clipFar = 4.0;
+			float dist = rayMarching(ro, rd, clipNear, clipFar );
+			
+			vec3 sceneColor = vec3(vec3(1.,0.,0.) / (1. + 1000000.*dist*dist*dist));
+			gl_FragColor = vec4(sceneColor, 1.0);
+		}
+	</script>
+	
+	<script type="x-shader/x-fragment" id="binaryTree">
+		const float MAX_ITER = 100.;
+		uniform float iBTLevels;
+		uniform float iBTAngle;
+		uniform float iBTBaseLength;
+		uniform float iBTLengthDecayRatio;
+		uniform float iBTStartHeight;
+		void main() {
+			vec2 p = calculateGraphicalUVs();
+			p.y -= iBTStartHeight;
+			mat2 rotator = rotate2D(iBTAngle * PI / -180.);
+			float d = 100.;
+			float len = iBTBaseLength;
+			for (float i = 0.; i < MAX_ITER; i += 1.) {
+				if (i >= iBTLevels) break;
+				
+				p.x = abs(p.x);
+				d = min(d, distanceSegmentPoint(vec2(0.), vec2(0., len), p));
+				p.y -= len;
+				p = rotator * p;
+				len *= iBTLengthDecayRatio;
+			}
+			
+			if (abs(d) < .005) {
+				gl_FragColor = vec4(0.,0.,0.,1.);
+			} else {
+				gl_FragColor = vec4(1.);
+			}
+		}
+	</script>
+	
+	<script type="x-shader/x-fragment" id="burningShip">
+		const float MAX_ITER = 1000.;
+		uniform float iShipMaxIterations;
+		uniform float iShipOffsetX;
+		uniform float iShipOffsetY;
+		uniform float iShipScale;
+		void main() {
+			vec2 uv = calculateGraphicalUVs();
+			uv *= pow(10., iShipScale);
+			uv.x += 1.75;
+			uv.y += .04;
+			uv += vec2(iShipOffsetX, iShipOffsetY);
+			
+			vec2 p = uv, z = vec2(0.);
+			float iter = 0.;
+			for (float i = 0.; i < MAX_ITER; i += 1.) {
+				if (length(z) > 60000. || i >= iShipMaxIterations) break;
+				z = abs(vec2(z.x * z.x - z.y * z.y - p.x, 2. * z.x * z.y - p.y));
+				iter += 1.;
+			}
+			if (iter == MAX_ITER)
+				gl_FragColor = vec4(0.,0.,0.,1.);
+			else {
+				vec3 col = (iter / iShipMaxIterations) * vec3(1,1,1);
+				gl_FragColor = vec4(col, 1.);
+			}
+		}
+	</script>
+	
+	<script type="x-shader/x-fragment" id="quadtree">
+		uniform float iQuadTreeDepth;
+		void main() {
+			vec2 uv = calculateGraphicalUVs();
+			
+			vec2 testPointCoords = vec2(.1234 + sin(iTime * 2.12 * .5) * .5, .345 + cos(iTime * .5) * .6);
+			
+			float lightLevel = 0.;
+			
+			// xy is position, zw is size
+			vec4 currentRect = vec4(-1., -1., 2., 2.);
+			
+			for (int i = 0; i < 100; ++i) {
+				if (float(i) >= iQuadTreeDepth) break;
+				
+				if (currentRect.x <= uv.x && 
+				    currentRect.y <= uv.y && 
+				    uv.x <= currentRect.x + currentRect.z && 
+				    uv.y <= currentRect.y + currentRect.w) {
+					
+					++lightLevel;
+					
+					// modify rect to get next quadtree level
+					currentRect.zw *= .5;
+					if (testPointCoords.x >= currentRect.x + currentRect.z) currentRect.x += currentRect.z;
+					if (testPointCoords.y >= currentRect.y + currentRect.w) currentRect.y += currentRect.w;
+				} else {
+					break;
+				}
+			}
+			
+			lightLevel /= iQuadTreeDepth;
+			
+			gl_FragColor = vec4(vec3(lightLevel), 1.);
+		}
+	</script>
+	
+	<script type="x-shader/x-fragment" id="sierpinski">
+		uniform float iSierpinskiSides;
+		uniform float iSierpinskiIterations;
+		
+		// hacky way that's necessary to do variable iterations
+		const float MAX_ITER = 100.;
+		void main() {
+			vec2 uv = calculateGraphicalUVs();
+			
+			float triangleSize = .75;
+			float sierpinskiTest = 1.;
+			
+			mat2 rotate60 = rotate2D(TAU / 6.);
+			
+			for (float i = 0.; i < MAX_ITER; i += 1.) {
+				if (i >= iSierpinskiIterations) break;
+				
+				uv = pModPolar(uv, TAU / iSierpinskiSides, TAU / 4.);
+				sierpinskiTest *= step(0., fEquilateralTriangle(rotate60 * uv, triangleSize * .5));
+				uv.y -= .58 * triangleSize;
+				triangleSize *= .5;
+			}
+			
+			vec3 col = vec3(sierpinskiTest);
+			gl_FragColor = vec4(col, 1.);
+		}
+	</script>
+	
+	<script type="x-shader/x-fragment" id="renderComputeBuffer">
+		// literally just renders the double-buffered texture.
+		void main() { gl_FragColor = texture2D(iComputeBuffer, vUV); }
+	</script>
+	
+	<script type="x-shader/x-fragment" id="fragShader">
+		void main() {
+			Setup3D info = init3D(vec3(0.,0.,-1.), vec3(0.), .5);
+			
+			vec3 ro = info.origin;
+			vec3 rd = info.viewDir;
+		
+			gl_FragColor = texture2D(iComputeBuffer, vUV);
+			
+		}
+	</script>
+	
+	
+	<!-- Reusable Vertex Shader -->
+	<script type="x-shader/x-vertex" id="vertShader">
+		precision highp float;
+		attribute vec3 position;
+		attribute vec2 uv;
+		varying vec2 vUV;
+
+		void main() {
+			vUV = uv;
+			gl_Position = vec4(position, 1.0);
+		}
+	</script>
+	
+	<!-- Helper Prelude -->
+	<script type="x-shader/x-fragment" id="helperPrelude">
+		precision highp float;
+		
+		varying vec2 vUV;
+		
+		uniform float iTime;
+		uniform float iAspectRatio;
+		uniform sampler2D iComputeBuffer;
+		
+		struct Setup3D {
+			vec3 origin;
+			vec3 viewDir;
+		};
+		
+		vec2 calculateGraphicalUVs() {
+			return (2. * vUV - 1.) * vec2(iAspectRatio, 1.);
+		}
+		
+		Setup3D init3D(vec3 camPos, vec3 lookAt, float fieldOfView) {
+			vec2 scrncoord = calculateGraphicalUVs();
+			vec3 forward = normalize(lookAt - camPos);
+			vec3 right = normalize(vec3(forward.z, 0., -forward.x));
+			vec3 up = normalize(cross(forward, right));
+			Setup3D outputStruct;
+			outputStruct.origin = camPos;
+			outputStruct.viewDir = normalize(forward + fieldOfView * scrncoord.x * right + fieldOfView * scrncoord.y * up);
+			return outputStruct;
+		}
+		
+		#define PI 3.1415926535897932384626433832795
+		#define TAU 6.283185307179586476925286766559
+		
+		mat2 rotate2D(float a) {
+			float s = sin(a), c = cos(a);
+			return mat2(c, -s, s, c);
+		}
+		
+		// raymarching functions (mainly taken from http://mercury.sexy/hg_sdf/ )
+		float vmax(vec2 v) { return max(v.x, v.y); }
+		float vmax(vec3 v) { return max(v.x, max(v.y, v.z)); }
+		float vmax(vec4 v) { return max(max(v.x, v.y), max(v.z, v.w)); }
+		float vmin(vec2 v) { return min(v.x, v.y); }
+		float vmin(vec3 v) { return min(v.x, min(v.y, v.z)); }
+		float vmin(vec4 v) { return min(min(v.x, v.y), min(v.z, v.w)); }
+		
+		float fSphere(vec3 p, float r) {
+			return length(p) - r;
+		}
+		
+		float fBox(vec3 p, vec3 b) {
+			vec3 d = abs(p) - b;
+			return length(max(d, vec3(0))) + vmax(min(d, vec3(0)));
+		}
+		
+		// from iq's https://www.shadertoy.com/view/Xl2yDW
+		float fEquilateralTriangle(vec2 p, float size) {
+			p /= size;
+			const float rt3 = sqrt(3.);
+			p.x = abs(p.x) - 1.;
+			p.y += 1./rt3;
+			if (p.x + rt3 * p.y > 0.) p = vec2(p.x - rt3 * p.y, -rt3 * p.x - p.y) * .5;
+			p.x -= clamp(p.x, -2., 0.);
+			return -length(p) * sign(p.y);
+		}
+		
+		vec2 pModPolar(vec2 p, float angle, float offset) {
+			float a = atan(p.y, p.x) - offset + angle * .5;
+			float r = length(p);
+			float c = floor(a / angle);
+			a = mod(a, angle) - angle * .5;
+			a += offset;
+			return vec2(cos(a), sin(a)) * r;
+		}
+		
+		float cross2D(vec2 a, vec2 b) { return a.x * b.y - b.x * a.y; }
+		
+		float distanceLinePoint(vec2 lp1, vec2 lp2, vec2 q) {
+			return abs(cross2D(lp2 - lp1, q - lp1)) / length(lp2 - lp1); 
+		}
+
+		float distanceSegmentPoint(vec2 sp1, vec2 sp2, vec2 q) {
+			if (dot(sp2 - sp1, q - sp1) < 0.) return length(q - sp1);
+			if (dot(sp1 - sp2, q - sp2) < 0.) return length(q - sp2);
+			return distanceLinePoint(sp1, sp2, q);
+		}
+	</script>
+
+	<!-- Compute Buffer Shaders -->
+	<script type="x-shader/x-fragment" id="computeStrangeAttractor">
+		precision highp float;
+		precision highp int;
+		uniform float iTime;
+		uniform sampler2D iComputeBuffer;
+		uniform float iSAAlpha;
+		uniform float iSABeta;
+		uniform float iSAFade;
+		uniform float iSASize;
+		varying vec2 vUV;
+		
+		vec2 hash23(vec3 p3) {
+			p3 = fract(p3 * vec3(.1031, .1030, .0973));
+			p3 += dot(p3, p3.yzx+44.44);
+			return fract((p3.xx+p3.yz)*p3.zy);
+		}
+		
+		void main() {
+			vec4 particledata = texture2D(iComputeBuffer, vec2(0.));
+			vec2 p = particledata.xy;
+			if (gl_FragCoord.x <= 1. && gl_FragCoord.y <= 1.) {
+				if (mod(abs(iTime), 2.) < .1) {
+					gl_FragColor = vec4(hash23(vec3(p, iTime)), length(hash23(vec3(iTime, p))), .01);
+				} else {
+					p *= vec2(10.);
+					p -= vec2(5.);
+					vec2 posnew = vec2(1. - iSAAlpha * p.x * p.x + p.y, iSABeta * p.x);
+					posnew += vec2(5.);
+					posnew /= vec2(10.);
+					gl_FragColor = vec4(fract(posnew),particledata.z, particledata.w * 2.);
+				}
+			} else {
+				if (length(p - vUV) < pow(10., iSASize) * particledata.w) {
+					gl_FragColor = vec4(particledata.zw,0,1);
+				} else {
+					gl_FragColor = texture2D(iComputeBuffer, vUV) * iSAFade;
+				}
+			}
+		}
+	</script>
+	
+	<script type="x-shader/x-fragment" id="computeRandomWalk">
+		precision highp float;
+		precision highp int;
+		#define TAU 6.283185307179586476925286766559
+		
+		uniform float iTime;
+		uniform sampler2D iComputeBuffer;
+		
+		varying vec2 vUV;
+		
+		vec2 hash23(vec3 p3) {
+			p3 = fract(p3 * vec3(.1031, .1030, .0973));
+			p3 += dot(p3, p3.yzx+44.44);
+			return fract((p3.xx+p3.yz)*p3.zy);
+		}
+		
+		void main() {
+			vec4 particledata = texture2D(iComputeBuffer, vec2(0.));
+			vec2 p = particledata.xy;
+			if (gl_FragCoord.x <= 1. && gl_FragCoord.y <= 1.) {
+				if (dot(particledata, particledata) < .0001) {
+					// uninitialized (black)
+					gl_FragColor = vec4(.5,.5,0.,1.);
+				} else {
+					// compute next position
+					vec2 heading = hash23(vec3(iTime));
+					p *= 20.;
+					p -= 10.;
+					
+					p += vec2(sin(TAU * heading.x), cos(TAU * heading.x)) * heading.y * .5;
+					
+					p += 10.;
+					p /= 20.;
+					p = fract(p);
+					gl_FragColor = vec4(p, 0., 1.);
+				}
+			} else {
+				vec4 old = texture2D(iComputeBuffer, vUV);
+				if (length(vUV - p) < .01) {
+					old.r += .1;
+					old.r = clamp(old.r, 0., 1.);
+				}
+				gl_FragColor = old;
+			}
+		}
+	
+	</script>
+	
+	<!-- A "clear-everything" compute shader -->
+	<script type="x-shader/x-fragment" id="computeClear">
+		precision highp float;
+		void main() { gl_FragColor = vec4(0.); }
+	</script>
+
+	<!-- End Shaders -->
+	<script src="https://threejs.org/build/three.min.js"></script>
+	<script src="https://threejs.org/examples/js/controls/OrbitControls.js"></script>
+	</head>
+	<body>
+	<div id="container"></div>
+	<script type="module">
+	"use strict";
+	
+	import { GUI } from 'https://threejs.org/examples/jsm/libs/dat.gui.module.js';
+	
+	
+	let scene, sceneCompute, camera, renderer;
+	let uniforms, drawplane, computePlane, computeUniforms;
+	let WIDTH = window.innerWidth, HEIGHT = window.innerHeight;
+	let rtTexture, rtTexture2, renderingToTex1;
+	let rtClearRequested = false, activeComputeShader = '';
+	
+	init();
+	render();
+
+	function init() {
+		renderingToTex1 = true;
+		initRenderer();
+		initComputeScene();
+		initScene();
+		
+		window.addEventListener("resize", onWindowResize);
+		
+		let params = {
+			iSierpinskiSides: 3,
+			iSierpinskiIterations: 5,
+			SwitchToSierpinski: function() { switchShader('sierpinski'); },
+			
+			iQuadTreeDepth: 5,
+			SwitchToQuadtree: function() { switchShader('quadtree'); },
+			
+			
+			iSAAlpha: 1.4,
+			iSABeta: 0.3,
+			iSAFade: 0.99,
+			iSASize: -3,
+			SwitchToStrangeAttractor: function() { rtClearRequested = true; switchShader('renderComputeBuffer'); switchComputeShader('computeStrangeAttractor'); },
+			
+			iShipMaxIterations: 37,
+			iShipScale: -1.3,
+			iShipOffsetX: 0,
+			iShipOffsetY: 0,
+			SwitchToBurningShip: function() { switchShader('burningShip'); },
+			
+			
+			SwitchToRandomWalker: function() { rtClearRequested = true; switchShader('renderComputeBuffer'); switchComputeShader('computeRandomWalk'); },
+			
+			iBTLevels: 3,
+			iBTAngle: 90,
+			iBTBaseLength: .1,
+			iBTLengthDecayRatio: .5,
+			iBTStartHeight: -1,
+			SwitchToBinaryTree: function() { switchShader('binaryTree'); },
+			
+			i3DIterations: 1,
+			SwitchTo3DFractal: function() { switchShader('raymarched'); },
+		};
+		
+		let gui = new GUI();
+		
+		let sierpinskiFolder = gui.addFolder('Sierpinski (IFS)');
+		sierpinskiFolder.add(params, 'SwitchToSierpinski').name('Switch to');
+		sierpinskiFolder.add(params, 'iSierpinskiSides').min(3).max(10).step(1).name('Sides').onChange(function(testval) { uniforms['iSierpinskiSides'].value = testval; });
+		sierpinskiFolder.add(params, 'iSierpinskiIterations').min(1).max(8).step(1).name('Iterations').onChange(function(testval) { uniforms['iSierpinskiIterations'].value = testval; });
+		
+		let binaryTreeFolder = gui.addFolder('Binary Tree (L-System)');
+		binaryTreeFolder.add(params, 'SwitchToBinaryTree').name('Switch to');
+		binaryTreeFolder.add(params, 'iBTLevels').min(1).max(30).step(1).name('Depth').onChange(function(testval) { uniforms['iBTLevels'].value = testval; });
+		binaryTreeFolder.add(params, 'iBTAngle').min(0).max(180).step(1).name('Angle').onChange(function(testval) { uniforms['iBTAngle'].value = testval; });
+		binaryTreeFolder.add(params, 'iBTBaseLength').min(0).max(1).step(.05).name('Base Length').onChange(function(testval) { uniforms['iBTBaseLength'].value = testval; });
+		binaryTreeFolder.add(params, 'iBTLengthDecayRatio').min(0).max(1).step(.05).name('Length Ratio').onChange(function(testval) { uniforms['iBTLengthDecayRatio'].value = testval; });
+		binaryTreeFolder.add(params, 'iBTStartHeight').min(-1).max(1).step(.05).name('Start Height').onChange(function(testval) { uniforms['iBTStartHeight'].value = testval; });
+		
+		let strangeAttractorFolder = gui.addFolder('Henon Map (Strange Attractor)');
+		strangeAttractorFolder.add(params, 'SwitchToStrangeAttractor').name('Switch to');
+		strangeAttractorFolder.add(params, 'iSAAlpha').min(-4).max(4).step(.1).name('Alpha').onChange(function(testval) { computeUniforms['iSAAlpha'].value = testval; });
+		strangeAttractorFolder.add(params, 'iSABeta').min(-4).max(4).step(.1).name('Beta').onChange(function(testval) { computeUniforms['iSABeta'].value = testval; });
+		strangeAttractorFolder.add(params, 'iSAFade').min(0).max(1).step(.01).name('Fade Rate').onChange(function(testval) { computeUniforms['iSAFade'].value = testval; });
+		strangeAttractorFolder.add(params, 'iSASize').min(-3).max(-2).step(.1).name('Draw Size').onChange(function(testval) { computeUniforms['iSASize'].value = testval; });
+		
+		let burningShipFolder = gui.addFolder('Burning Ship (Escape-Time)');
+		burningShipFolder.add(params, 'SwitchToBurningShip').name('Switch to');
+		burningShipFolder.add(params, 'iShipMaxIterations').min(1).max(200).step(1).name('Max Iterations').onChange(function(testval) { uniforms['iShipMaxIterations'].value = testval; });
+		burningShipFolder.add(params, 'iShipScale').min(-5).max(2).name('Scale').onChange(function(testval) { uniforms['iShipScale'].value = testval; });
+		burningShipFolder.add(params, 'iShipOffsetX').min(-3).max(3).name('Offset X').onChange(function(testval) { uniforms['iShipOffsetX'].value = testval; });
+		burningShipFolder.add(params, 'iShipOffsetY').min(-3).max(3).name('Offset Y').onChange(function(testval) { uniforms['iShipOffsetY'].value = testval; });
+		
+		let randomWalkFolder = gui.addFolder('Random Walk');
+		randomWalkFolder.add(params, 'SwitchToRandomWalker').name('Switch to');
+		
+		let quadtreeFolder = gui.addFolder('Quadtree (FSR)');
+		quadtreeFolder.add(params, 'SwitchToQuadtree').name('Switch to');
+		quadtreeFolder.add(params, 'iQuadTreeDepth').min(1).max(20).step(1).name('Depth').onChange(function(testval) { uniforms['iQuadTreeDepth'].value = testval; });
+		
+		let raymarchedFolder = gui.addFolder('Raymarched (3D)');
+		raymarchedFolder.add(params, 'SwitchTo3DFractal').name('Switch to');
+		raymarchedFolder.add(params, 'i3DIterations').min(1).max(6).step(1).name('Iterations').onChange(function(testval) { uniforms['i3DIterations'].value = testval; });
+		
+		onWindowResize();
+	}
+		
+	function initComputeScene() {
+		sceneCompute = new THREE.Scene();
+		
+		let renderTargetParams = {
+			minFilter: THREE.LinearFilter,
+			stencilBuffer: false,
+			depthBuffer: false,
+		};
+		
+		rtTexture  = new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight, renderTargetParams);
+		rtTexture2 = new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight, renderTargetParams);
+		
+		let plane = new THREE.PlaneBufferGeometry(2,2);
+		computeUniforms = {
+			"iTime": { value: 1.0 },
+			"iComputeBuffer": { value: rtTexture2.texture },
+			"iSAAlpha": { value: 1.4 },
+			"iSABeta": { value: 0.3 },
+			"iSAFade": { value: 0.99 },
+			"iSASize": { value: -3 },
+		};
+		
+		computePlane = new THREE.Mesh(plane);
+		switchComputeShader('computeClear');
+		
+		sceneCompute.add(computePlane);
+	}
+	
+	function initScene() {
+		scene = new THREE.Scene();
+		camera = new THREE.OrthographicCamera(-1,1,1,-1,0,1);
+		
+		let plane = new THREE.PlaneBufferGeometry(2, 2);
+		uniforms = {
+			"iTime": { value: 1.0 },
+			"iAspectRatio": { value: 1.0 },
+			"iSierpinskiSides": { value: 3 },
+			"iSierpinskiIterations": { value: 5 },
+			"iQuadTreeDepth": { value: 5 },
+			"iComputeBuffer": { value: rtTexture2.texture },
+			"iShipScale": { value: -1.3 },
+			"iShipOffsetX": { value: 0 },
+			"iShipOffsetY": { value: 0 },
+			"iShipMaxIterations": { value: 37 },
+			"iBTLevels": { value: 3 },
+			"iBTAngle": { value: 90 },
+			"iBTBaseLength": { value: .1 },
+			"iBTLengthDecayRatio": { value: .5 },
+			"iBTStartHeight": { value: -1 },
+			"i3DIterations": { value: 1 },
+		};
+		
+		drawplane = new THREE.Mesh(plane);
+		switchShader('fragShader');
+		
+		scene.add(drawplane);
+	}
+
+	function render(timestamp) {
+		requestAnimationFrame(render);
+		let t = (Date.now() % 10000000) / 1000;//timestamp / 1000;
+		uniforms['iTime'].value = t;
+		computeUniforms['iTime'].value = t;
+		
+		renderer.clear();
+		if (renderingToTex1) {
+			uniforms['iComputeBuffer'].value = rtTexture2.texture;
+			computeUniforms['iComputeBuffer'].value = rtTexture2.texture;
+			renderer.setRenderTarget(rtTexture);
+		} else {
+			uniforms['iComputeBuffer'].value = rtTexture.texture;
+			computeUniforms['iComputeBuffer'].value = rtTexture.texture;
+			renderer.setRenderTarget(rtTexture2);
+		}
+		// swap buffers
+		renderingToTex1 = !renderingToTex1;
+		
+		renderer.clear();
+		if (rtClearRequested) {
+			rtClearRequested = false;
+			let temp = activeComputeShader;
+			switchComputeShader('computeClear');
+			renderer.render(sceneCompute, camera);
+			switchComputeShader(temp);
+		} else {
+			renderer.render(sceneCompute, camera);
+		}
+		renderer.setRenderTarget(null);
+		renderer.render(scene, camera);
+	}
+
+	function initRenderer() {
+		renderer = new THREE.WebGLRenderer({ antialias: true });
+		renderer.setPixelRatio(window.devicePixelRatio);
+		renderer.autoClear = false;
+		document.getElementById('container').appendChild(renderer.domElement);
+	}
+	
+	function switchShader(name) {
+		drawplane.material = new THREE.RawShaderMaterial({
+			uniforms:       uniforms,
+			vertexShader:   document.getElementById('vertShader').textContent,
+			fragmentShader: document.getElementById('helperPrelude').textContent + document.getElementById(name).textContent
+		});
+		switchComputeShader('computeClear');
+	}
+	
+	function switchComputeShader(name) {
+		activeComputeShader = name;
+		computePlane.material = new THREE.RawShaderMaterial({
+			uniforms:       computeUniforms,
+			vertexShader:   document.getElementById('vertShader').textContent,
+			fragmentShader: document.getElementById(name).textContent
+		});
+	}
+	
+	function onWindowResize() {
+		let w = window.innerWidth, h = window.innerHeight;
+		let ar = w / h;
+		renderer.setSize(w * .95, h * .95);
+		uniforms['iAspectRatio'].value = ar;
+	}
+	</script>
+		
+</body>
+	
+</html>
